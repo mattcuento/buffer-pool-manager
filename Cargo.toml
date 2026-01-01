@@ -1,0 +1,16 @@
+[package]
+name = "buffer_pool_manager"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+test-case = "3.3.1"
+criterion = "0.5.1"
+
+[[bench]]
+name = "buffer-pool-manager"
+path = "benches/buffer_pool_manager_benchmark.rs"
+harness = false
