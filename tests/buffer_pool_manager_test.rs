@@ -1,7 +1,7 @@
 use test_case::test_case;
 use std::sync::Arc;
-use std::fs;
 use std::thread;
+use tempfile::NamedTempFile;
 
 use buffer_pool_manager::api::{BufferPoolManager, PageId};
 use buffer_pool_manager::disk_manager::DiskManager;
@@ -11,10 +11,6 @@ use buffer_pool_manager::concurrent::ConcurrentBufferPoolManager;
 // Define a type alias for the BPM factory to simplify function signatures
 type BPMFactory = Arc<dyn Fn(Arc<DiskManager>, usize) -> Arc<dyn BufferPoolManager + 'static> + Send + Sync>;
 
-// Helper to remove db file, useful in tests.
-fn cleanup_db_file(db_file: &str) {
-    let _ = fs::remove_file(db_file);
-}
 
 const TEST_POOL_SIZE: usize = 3;
 const MULTITHREADED_POOL_SIZE: usize = 10;
@@ -31,21 +27,24 @@ fn get_concurrent_bpm_factory() -> BPMFactory {
     })
 }
 
-#[test_case(get_actor_bpm_factory(), "actor_new_page.db", TEST_POOL_SIZE ; "actor_bpm_new_page")]
-#[test_case(get_concurrent_bpm_factory(), "concurrent_new_page.db", TEST_POOL_SIZE ; "concurrent_bpm_new_page")]
-fn test_new_page(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
-    let disk_manager = Arc::new(DiskManager::new(db_file, false).unwrap());
+#[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_new_page")]
+#[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_new_page")]
+fn test_new_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_file_path = temp_file.path().to_str().unwrap();
+    let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
     let bpm = bpm_factory(disk_manager, pool_size);
     let page = bpm.new_page().unwrap();
     assert_eq!(page.page_id(), 0);
     drop(page); // Unpin the page before removing the file
-    cleanup_db_file(db_file);
 }
 
-#[test_case(get_actor_bpm_factory(), "actor_fetch_page.db", TEST_POOL_SIZE ; "actor_bpm_fetch_page")]
-#[test_case(get_concurrent_bpm_factory(), "concurrent_fetch_page.db", TEST_POOL_SIZE ; "concurrent_bpm_fetch_page")]
-fn test_fetch_page(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
-    let disk_manager = Arc::new(DiskManager::new(db_file, false).unwrap());
+#[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_fetch_page")]
+#[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_fetch_page")]
+fn test_fetch_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_file_path = temp_file.path().to_str().unwrap();
+    let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
     let bpm = bpm_factory(disk_manager, pool_size);
     let page = bpm.new_page().unwrap();
     let page_id = page.page_id();
@@ -54,13 +53,14 @@ fn test_fetch_page(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
     let fetched_page = bpm.fetch_page(page_id).unwrap();
     assert_eq!(fetched_page.page_id(), page_id);
     drop(fetched_page); // Unpin
-    cleanup_db_file(db_file);
 }
 
-#[test_case(get_actor_bpm_factory(), "actor_unpin_page.db", TEST_POOL_SIZE ; "actor_bpm_unpin_page")]
-#[test_case(get_concurrent_bpm_factory(), "concurrent_unpin_page.db", TEST_POOL_SIZE ; "concurrent_bpm_unpin_page")]
-fn test_unpin_page(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
-    let disk_manager = Arc::new(DiskManager::new(db_file, false).unwrap());
+#[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_unpin_page")]
+#[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_unpin_page")]
+fn test_unpin_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_file_path = temp_file.path().to_str().unwrap();
+    let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
     let bpm = bpm_factory(disk_manager, pool_size);
 
     let mut pages = Vec::new();
@@ -85,14 +85,14 @@ fn test_unpin_page(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
 
     // Now, we should be able to create a new page because frames are free.
     let _page_c = bpm.new_page().unwrap(); // This should succeed
-    
-    cleanup_db_file(db_file);
 }
 
-#[test_case(get_actor_bpm_factory(), "actor_multithreaded.db", MULTITHREADED_POOL_SIZE ; "actor_bpm_multithreaded")]
-#[test_case(get_concurrent_bpm_factory(), "concurrent_multithreaded.db", MULTITHREADED_POOL_SIZE ; "concurrent_bpm_multithreaded")]
-fn test_multithreaded_many_threads_no_contention(bpm_factory: BPMFactory, db_file: &str, pool_size: usize) {
-    let disk_manager = Arc::new(DiskManager::new(db_file, false).unwrap());
+#[test_case(get_actor_bpm_factory(), MULTITHREADED_POOL_SIZE ; "actor_bpm_multithreaded")]
+#[test_case(get_concurrent_bpm_factory(), MULTITHREADED_POOL_SIZE ; "concurrent_bpm_multithreaded")]
+fn test_multithreaded_many_threads_no_contention(bpm_factory: BPMFactory, pool_size: usize) {
+    let temp_file = NamedTempFile::new().unwrap();
+    let db_file_path = temp_file.path().to_str().unwrap();
+    let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
     let bpm = bpm_factory(disk_manager.clone(), pool_size); // Recreate BPM for this test
     let mut threads = vec![];
     let num_threads = 5;
@@ -129,5 +129,4 @@ fn test_multithreaded_many_threads_no_contention(bpm_factory: BPMFactory, db_fil
         );
         drop(page);
     }
-    cleanup_db_file(db_file);
 }
