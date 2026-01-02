@@ -3,6 +3,7 @@
 
 use super::api::{BufferPoolManager, BpmError, PageGuard, PageId, PAGE_SIZE};
 use super::disk_manager::DiskManager;
+use log::{debug, trace};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use std::sync::{Arc, Mutex, RwLock};
@@ -64,6 +65,7 @@ impl<'a> Deref for ConcurrentPageGuard<'a> {
 
 impl<'a> DerefMut for ConcurrentPageGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
+        trace!("Page {} in frame {} is being marked as dirty", self.page_id, self.frame_id);
         let mut frame_guard = self.buffer_pool_manager.frames[self.frame_id].write().unwrap();
         frame_guard.is_dirty = true;
         // The borrow checker is not smart enough to know that the guard's lifetime
@@ -75,35 +77,43 @@ impl<'a> DerefMut for ConcurrentPageGuard<'a> {
 
 impl<'a> Drop for ConcurrentPageGuard<'a> {
     fn drop(&mut self) {
+        trace!("Dropping guard for page {}, unpinning.", self.page_id);
         self.buffer_pool_manager.unpin_page(self.page_id).unwrap();
     }
 }
 
 impl BufferPoolManager for ConcurrentBufferPoolManager {
     fn fetch_page(&self, page_id: PageId) -> Result<Box<dyn PageGuard + '_>, BpmError> {
+        trace!("Fetching page {}", page_id);
         let pt_read_lock = self.page_table.read().unwrap();
         if let Some(&frame_id) = pt_read_lock.get(&page_id) {
             // Page is in the buffer pool.
+            debug!("Page {} found in frame {} (cache hit).", page_id, frame_id);
             let mut frame = self.frames[frame_id].write().unwrap();
             frame.pin_count += 1;
             frame.is_referenced = true;
+            trace!("Page {} pin count incremented to {}.", page_id, frame.pin_count);
             return Ok(Box::new(ConcurrentPageGuard { buffer_pool_manager: self, page_id, frame_id }));
         }
         drop(pt_read_lock);
 
+        debug!("Page {} not in buffer pool (cache miss).", page_id);
         // Page not in pool, need to fetch from disk.
         let frame_id = self.find_victim_frame()?;
         let mut frame = self.frames[frame_id].write().unwrap();
 
+        let old_page_id = frame.page_id;
+        debug!("Victim frame {} chosen, which held page {}.", frame_id, old_page_id);
+
         // If the victim frame is dirty, write it back to disk.
         if frame.is_dirty {
-            self.disk_manager.write_page(frame.page_id, &frame.data).map_err(BpmError::IoError)?;
+            debug!("Victim frame {} is dirty. Flushing page {} to disk.", frame_id, old_page_id);
+            self.disk_manager.write_page(old_page_id, &frame.data).map_err(BpmError::IoError)?;
             frame.is_dirty = false;
         }
 
-        let old_page_id = frame.page_id;
-
         // Update frame metadata for the new page.
+        trace!("Reading page {} from disk into frame {}.", page_id, frame_id);
         self.disk_manager.read_page(page_id, &mut frame.data).map_err(BpmError::IoError)?;
         frame.page_id = page_id;
         frame.pin_count = 1;
@@ -111,6 +121,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         frame.is_referenced = true;
 
         // Update the page table.
+        trace!("Updating page table: removing page {}, adding page {}.", old_page_id, page_id);
         let mut pt_write_lock = self.page_table.write().unwrap();
         pt_write_lock.remove(&old_page_id);
         pt_write_lock.insert(page_id, frame_id);
@@ -119,16 +130,21 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
     }
 
     fn new_page(&self) -> Result<Box<dyn PageGuard + '_>, BpmError> {
+        trace!("Creating new page.");
         let frame_id = self.find_victim_frame()?;
         let mut frame = self.frames[frame_id].write().unwrap();
 
+        let old_page_id = frame.page_id;
+        debug!("Victim frame {} chosen, which held page {}.", frame_id, old_page_id);
+
         if frame.is_dirty {
-            self.disk_manager.write_page(frame.page_id, &frame.data).map_err(BpmError::IoError)?;
+            debug!("Victim frame {} is dirty. Flushing page {} to disk.", frame_id, old_page_id);
+            self.disk_manager.write_page(old_page_id, &frame.data).map_err(BpmError::IoError)?;
             frame.is_dirty = false;
         }
 
-        let old_page_id = frame.page_id;
         let new_page_id = self.disk_manager.allocate_page();
+        debug!("Allocated new page_id {}.", new_page_id);
 
         // Update frame metadata.
         frame.page_id = new_page_id;
@@ -138,6 +154,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         frame.data = [0; PAGE_SIZE];
 
         // Update page table.
+        trace!("Updating page table: removing page {}, adding page {}.", old_page_id, new_page_id);
         let mut pt_write_lock = self.page_table.write().unwrap();
         pt_write_lock.remove(&old_page_id);
         pt_write_lock.insert(new_page_id, frame_id);
@@ -151,7 +168,12 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
             let mut frame = self.frames[frame_id].write().unwrap();
             if frame.pin_count > 0 {
                 frame.pin_count -= 1;
+                trace!("Page {} pin count decremented to {}.", page_id, frame.pin_count);
+            } else {
+                debug!("Attempted to unpin page {} with pin count 0.", page_id);
             }
+        } else {
+            debug!("Attempted to unpin page {} not in page table.", page_id);
         }
         Ok(())
     }
@@ -161,20 +183,25 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         if let Some(&frame_id) = pt_read_lock.get(&page_id) {
             let mut frame = self.frames[frame_id].write().unwrap();
             if frame.is_dirty {
+                debug!("Flushing dirty page {} in frame {} to disk.", page_id, frame_id);
                 self.disk_manager.write_page(page_id, &frame.data).map_err(BpmError::IoError)?;
                 frame.is_dirty = false;
+            } else {
+                trace!("Flush called on clean page {}.", page_id);
             }
         }
         Ok(())
     }
 
     fn flush_all_pages(&self) -> Result<(), BpmError> {
+        debug!("Flushing all dirty pages.");
         let pt_read_lock = self.page_table.read().unwrap();
         for (&page_id, &frame_id) in pt_read_lock.iter() {
             let mut frame = self.frames[frame_id].write().unwrap();
             if frame.is_dirty {
                 self.disk_manager.write_page(page_id, &frame.data).map_err(BpmError::IoError)?;
                 frame.is_dirty = false;
+                trace!("Flushed dirty page {} in frame {}.", page_id, frame_id);
             }
         }
         Ok(())
@@ -196,6 +223,7 @@ impl ConcurrentBufferPoolManager {
             }));
             free_list.push(i);
         }
+        debug!("ConcurrentBufferPoolManager created with pool size {}.", pool_size);
 
         Self {
             frames,
@@ -209,35 +237,46 @@ impl ConcurrentBufferPoolManager {
 
     /// Finds a victim frame using the free list or the CLOCK algorithm.
     fn find_victim_frame(&self) -> Result<FrameId, BpmError> {
+        trace!("Finding victim frame.");
         // 1. Try to get a frame from the free list.
         let mut free_list = self.free_list.lock().unwrap();
         if let Some(frame_id) = free_list.pop() {
+            debug!("Found free frame {} from free list.", frame_id);
             return Ok(frame_id);
         }
         drop(free_list);
 
         // 2. If free list is empty, run the CLOCK algorithm.
+        debug!("Free list empty, starting CLOCK algorithm.");
         let mut clock_hand = self.clock_hand.lock().unwrap();
-        for _ in 0..(2 * self.pool_size) {
+        for i in 0..(2 * self.pool_size) {
             // Search twice to avoid infinite loop
             let frame_id = *clock_hand;
+            trace!("CLOCK check: frame {} (loop {}).", frame_id, i);
 
             // Try to lock the frame. If it's locked, skip it and try the next one.
             if let Ok(mut frame) = self.frames[frame_id].try_write() {
                 if frame.pin_count == 0 {
                     if frame.is_referenced {
                         // Give it a second chance.
+                        trace!("CLOCK check: frame {} has pin_count 0 but is referenced. Giving second chance.", frame_id);
                         frame.is_referenced = false;
                     } else {
                         // Found a victim. Advance the clock hand for the next search.
+                        debug!("CLOCK victim found: frame {}.", frame_id);
                         *clock_hand = (*clock_hand + 1) % self.pool_size;
                         return Ok(frame_id);
                     }
+                } else {
+                    trace!("CLOCK check: skipping pinned frame {} (pin_count={}).", frame_id, frame.pin_count);
                 }
+            } else {
+                trace!("CLOCK check: could not lock frame {}, skipping.", frame_id);
             }
             *clock_hand = (*clock_hand + 1) % self.pool_size;
         }
 
+        debug!("No victim frame found after full CLOCK scan.");
         Err(BpmError::NoFreeFrames)
     }
 

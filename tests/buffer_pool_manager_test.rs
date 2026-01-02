@@ -30,6 +30,7 @@ fn get_concurrent_bpm_factory() -> BPMFactory {
 #[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_new_page")]
 #[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_new_page")]
 fn test_new_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let _ = env_logger::try_init();
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path().to_str().unwrap();
     let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
@@ -42,6 +43,7 @@ fn test_new_page(bpm_factory: BPMFactory, pool_size: usize) {
 #[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_fetch_page")]
 #[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_fetch_page")]
 fn test_fetch_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let _ = env_logger::try_init();
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path().to_str().unwrap();
     let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
@@ -58,6 +60,7 @@ fn test_fetch_page(bpm_factory: BPMFactory, pool_size: usize) {
 #[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_unpin_page")]
 #[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_unpin_page")]
 fn test_unpin_page(bpm_factory: BPMFactory, pool_size: usize) {
+    let _ = env_logger::try_init();
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path().to_str().unwrap();
     let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
@@ -90,6 +93,7 @@ fn test_unpin_page(bpm_factory: BPMFactory, pool_size: usize) {
 #[test_case(get_actor_bpm_factory(), MULTITHREADED_POOL_SIZE ; "actor_bpm_multithreaded")]
 #[test_case(get_concurrent_bpm_factory(), MULTITHREADED_POOL_SIZE ; "concurrent_bpm_multithreaded")]
 fn test_multithreaded_many_threads_no_contention(bpm_factory: BPMFactory, pool_size: usize) {
+    let _ = env_logger::try_init();
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path().to_str().unwrap();
     let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
@@ -134,6 +138,7 @@ fn test_multithreaded_many_threads_no_contention(bpm_factory: BPMFactory, pool_s
 #[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_lru_eviction")]
 #[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_lru_eviction")]
 fn test_lru_eviction(bpm_factory: BPMFactory, pool_size: usize) {
+    let _ = env_logger::try_init();
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path().to_str().unwrap();
     let disk_manager = Arc::new(DiskManager::new(db_file_path, false).unwrap());
@@ -194,6 +199,7 @@ impl<'a> Drop for ReadOnlyFileGuard<'a> {
 #[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_io_error")]
 #[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_io_error")]
 fn test_dirty_page_eviction_with_io_error(bpm_factory: BPMFactory, _pool_size: usize) {
+    let _ = env_logger::try_init();
     // This test uses a pool size of 1 to remove ambiguity in eviction policy.
     const POOL_SIZE: usize = 1;
 
