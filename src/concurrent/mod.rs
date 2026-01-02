@@ -39,7 +39,6 @@ pub struct ConcurrentBufferPoolManager {
 /// When dropped, it automatically unpins the page in the BPM.
 #[derive(Debug)]
 pub struct ConcurrentPageGuard<'a> {
-    buffer_pool_manager: &'a ConcurrentBufferPoolManager,
     page_id: PageId,
     frame_guard: RwLockWriteGuard<'a, Frame>,
 }
@@ -92,7 +91,6 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
             frame_guard.is_referenced = true;
             trace!("Page {} pin count incremented to {}.", page_id, frame_guard.pin_count);
             return Ok(Box::new(ConcurrentPageGuard {
-                buffer_pool_manager: self,
                 page_id,
                 frame_guard
             }));
@@ -130,7 +128,6 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         drop(pt_write_lock);
 
         Ok(Box::new(ConcurrentPageGuard {
-            buffer_pool_manager: self,
             page_id,
             frame_guard: frame
         }))
@@ -168,7 +165,6 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         drop(pt_write_lock);
 
         Ok(Box::new(ConcurrentPageGuard {
-            buffer_pool_manager: self,
             page_id: new_page_id,
             frame_guard: frame
         }))
