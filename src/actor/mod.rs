@@ -243,6 +243,7 @@ impl BpmActorState {
             let old_page_id = self.frames[frame_id].page_id;
             let data = &self.frame_data[frame_id];
             self.disk_manager.write_page(old_page_id, &data[..]).map_err(BpmError::IoError)?;
+            self.frames[frame_id].is_dirty = false;
         }
 
         let old_page_id = self.frames[frame_id].page_id;
@@ -268,6 +269,7 @@ impl BpmActorState {
             let old_page_id = self.frames[frame_id].page_id;
             let data = &self.frame_data[frame_id];
             self.disk_manager.write_page(old_page_id, &data[..]).map_err(BpmError::IoError)?;
+            self.frames[frame_id].is_dirty = false;
         }
 
         let old_page_id = self.frames[frame_id].page_id;

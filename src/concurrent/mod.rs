@@ -98,6 +98,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         // If the victim frame is dirty, write it back to disk.
         if frame.is_dirty {
             self.disk_manager.write_page(frame.page_id, &frame.data).map_err(BpmError::IoError)?;
+            frame.is_dirty = false;
         }
 
         let old_page_id = frame.page_id;
@@ -123,6 +124,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
 
         if frame.is_dirty {
             self.disk_manager.write_page(frame.page_id, &frame.data).map_err(BpmError::IoError)?;
+            frame.is_dirty = false;
         }
 
         let old_page_id = frame.page_id;
