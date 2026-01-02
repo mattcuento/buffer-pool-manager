@@ -6,7 +6,7 @@ use super::disk_manager::DiskManagerTrait;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 // Type alias for a frame index
 type FrameId = usize;
@@ -41,7 +41,7 @@ pub struct ConcurrentBufferPoolManager {
 pub struct ConcurrentPageGuard<'a> {
     buffer_pool_manager: &'a ConcurrentBufferPoolManager,
     page_id: PageId,
-    frame_id: FrameId,
+    frame_guard: RwLockWriteGuard<'a, Frame>,
 }
 
 impl<'a> PageGuard for ConcurrentPageGuard<'a> {
@@ -53,32 +53,30 @@ impl<'a> PageGuard for ConcurrentPageGuard<'a> {
 impl<'a> Deref for ConcurrentPageGuard<'a> {
     type Target = [u8];
     fn deref(&self) -> &Self::Target {
-        // Since the guard is alive, the page is pinned and won't be replaced.
-        // We can safely lock and access the data.
-        let frame_guard = self.buffer_pool_manager.frames[self.frame_id].read().unwrap();
-        // The borrow checker is not smart enough to know that the guard's lifetime
-        // is tied to the lock. We use a bit of unsafe to extend the lifetime.
-        // This is safe because the PageGuard's lifetime ensures the lock is held.
-        unsafe { &*(&frame_guard.data as *const _) }
+        // Safe: We hold the write lock for the entire lifetime of the guard
+        &self.frame_guard.data
     }
 }
 
 impl<'a> DerefMut for ConcurrentPageGuard<'a> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        trace!("Page {} in frame {} is being marked as dirty", self.page_id, self.frame_id);
-        let mut frame_guard = self.buffer_pool_manager.frames[self.frame_id].write().unwrap();
-        frame_guard.is_dirty = true;
-        // The borrow checker is not smart enough to know that the guard's lifetime
-        // is tied to the lock. We use a bit of unsafe to extend the lifetime.
-        // This is safe because the PageGuard's lifetime ensures the lock is held.
-        unsafe { &mut *(&mut frame_guard.data as *mut _) }
+        trace!("Page {} is being marked as dirty", self.page_id);
+        self.frame_guard.is_dirty = true;
+        // Safe: We hold the write lock for the entire lifetime of the guard
+        &mut self.frame_guard.data
     }
 }
 
 impl<'a> Drop for ConcurrentPageGuard<'a> {
     fn drop(&mut self) {
-        trace!("Dropping guard for page {}, unpinning.", self.page_id);
-        self.buffer_pool_manager.unpin_page(self.page_id).unwrap();
+        // Decrement pin count directly since we already hold the write lock
+        if self.frame_guard.pin_count > 0 {
+            self.frame_guard.pin_count -= 1;
+            trace!("Page {} pin count decremented to {}.", self.page_id, self.frame_guard.pin_count);
+        } else {
+            debug!("Attempted to unpin page {} with pin count 0.", self.page_id);
+        }
+        // The frame_guard will be automatically dropped, releasing the write lock
     }
 }
 
@@ -89,11 +87,15 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         if let Some(&frame_id) = pt_read_lock.get(&page_id) {
             // Page is in the buffer pool.
             debug!("Page {} found in frame {} (cache hit).", page_id, frame_id);
-            let mut frame = self.frames[frame_id].write().unwrap();
-            frame.pin_count += 1;
-            frame.is_referenced = true;
-            trace!("Page {} pin count incremented to {}.", page_id, frame.pin_count);
-            return Ok(Box::new(ConcurrentPageGuard { buffer_pool_manager: self, page_id, frame_id }));
+            let mut frame_guard = self.frames[frame_id].write().unwrap();
+            frame_guard.pin_count += 1;
+            frame_guard.is_referenced = true;
+            trace!("Page {} pin count incremented to {}.", page_id, frame_guard.pin_count);
+            return Ok(Box::new(ConcurrentPageGuard {
+                buffer_pool_manager: self,
+                page_id,
+                frame_guard
+            }));
         }
         drop(pt_read_lock);
 
@@ -125,8 +127,13 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         let mut pt_write_lock = self.page_table.write().unwrap();
         pt_write_lock.remove(&old_page_id);
         pt_write_lock.insert(page_id, frame_id);
+        drop(pt_write_lock);
 
-        Ok(Box::new(ConcurrentPageGuard { buffer_pool_manager: self, page_id, frame_id }))
+        Ok(Box::new(ConcurrentPageGuard {
+            buffer_pool_manager: self,
+            page_id,
+            frame_guard: frame
+        }))
     }
 
     fn new_page(&self) -> Result<Box<dyn PageGuard + '_>, BpmError> {
@@ -158,8 +165,13 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         let mut pt_write_lock = self.page_table.write().unwrap();
         pt_write_lock.remove(&old_page_id);
         pt_write_lock.insert(new_page_id, frame_id);
+        drop(pt_write_lock);
 
-        Ok(Box::new(ConcurrentPageGuard { buffer_pool_manager: self, page_id: new_page_id, frame_id }))
+        Ok(Box::new(ConcurrentPageGuard {
+            buffer_pool_manager: self,
+            page_id: new_page_id,
+            frame_guard: frame
+        }))
     }
 
     fn unpin_page(&self, page_id: PageId) -> Result<(), BpmError> {

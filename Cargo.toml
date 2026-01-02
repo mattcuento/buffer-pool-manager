@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 libc = "0.2"
 log = "0.4"
+rustix = { version = "0.38", features = ["fs"] }
 
 [dev-dependencies]
 test-case = "3.3.1"

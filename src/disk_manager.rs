@@ -52,13 +52,7 @@ impl DiskManager {
         if direct_io {
             #[cfg(target_os = "macos")]
             {
-                use std::os::unix::io::AsRawFd;
-                let fd = file.as_raw_fd();
-                unsafe {
-                    if libc::fcntl(fd, libc::F_NOCACHE, 1) == -1 {
-                        return Err(io::Error::last_os_error());
-                    }
-                }
+                set_file_nocache(&file)?;
             }
         }
 
@@ -93,4 +87,32 @@ impl DiskManagerTrait for DiskManager {
         *next_page_id += 1;
         page_id
     }
+}
+
+#[cfg(target_os = "macos")]
+/// Sets the F_NOCACHE flag on a file to disable OS-level caching.
+///
+/// This is necessary for direct I/O on macOS to prevent double-buffering
+/// between the OS page cache and the database buffer pool.
+///
+/// # Safety
+///
+/// This function uses unsafe FFI calls to libc::fcntl. It is safe to call
+/// because:
+/// - The file descriptor is valid (obtained from a valid File)
+/// - F_NOCACHE is a valid fcntl command for macOS
+/// - The return value is properly checked for errors
+fn set_file_nocache(file: &File) -> io::Result<()> {
+    use std::os::unix::io::AsRawFd;
+
+    let fd = file.as_raw_fd();
+    // SAFETY: We're calling fcntl with a valid file descriptor and the F_NOCACHE flag.
+    // The file descriptor is guaranteed to be valid because it comes from a live File object.
+    // We check the return value to detect errors.
+    unsafe {
+        if libc::fcntl(fd, libc::F_NOCACHE, 1) == -1 {
+            return Err(io::Error::last_os_error());
+        }
+    }
+    Ok(())
 }
