@@ -6,6 +6,18 @@ use std::io;
 use std::os::unix::fs::FileExt; // Using positioned I/O for better concurrency
 use std::sync::Mutex;
 
+/// Trait for disk manager operations to enable testing and mocking.
+pub trait DiskManagerTrait: Send + Sync + std::fmt::Debug {
+    /// Reads a page from disk into the provided buffer.
+    fn read_page(&self, page_id: PageId, data: &mut [u8]) -> io::Result<()>;
+
+    /// Writes a page from the buffer to disk.
+    fn write_page(&self, page_id: PageId, data: &[u8]) -> io::Result<()>;
+
+    /// Allocates a new page ID.
+    fn allocate_page(&self) -> PageId;
+}
+
 /// Manages reading and writing pages to a file on disk.
 /// This implementation uses positioned I/O (`read_at`, `write_at`) to allow
 /// multiple concurrent_buffer_pool_manager reads and writes without a global lock on the file.
@@ -59,20 +71,23 @@ impl DiskManager {
         })
     }
 
+}
+
+impl DiskManagerTrait for DiskManager {
     /// Reads a page from the database file into the provided buffer using positioned I/O.
-    pub fn read_page(&self, page_id: PageId, data: &mut [u8]) -> io::Result<()> {
+    fn read_page(&self, page_id: PageId, data: &mut [u8]) -> io::Result<()> {
         let offset = (page_id * PAGE_SIZE) as u64;
         self.db_file.read_exact_at(data, offset)
     }
 
     /// Writes a page from the buffer into the database file using positioned I/O.
-    pub fn write_page(&self, page_id: PageId, data: &[u8]) -> io::Result<()> {
+    fn write_page(&self, page_id: PageId, data: &[u8]) -> io::Result<()> {
         let offset = (page_id * PAGE_SIZE) as u64;
         self.db_file.write_all_at(data, offset)
     }
 
     /// Allocates a new page ID.
-    pub fn allocate_page(&self) -> PageId {
+    fn allocate_page(&self) -> PageId {
         let mut next_page_id = self.next_page_id.lock().unwrap();
         let page_id = *next_page_id;
         *next_page_id += 1;

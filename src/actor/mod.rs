@@ -2,7 +2,7 @@
 //! The actor_buffer_pool_manager-based implementation of the Buffer Pool Manager.
 
 use super::api::{BufferPoolManager, BpmError, PageGuard, PageId, PAGE_SIZE};
-use super::disk_manager::DiskManager;
+use super::disk_manager::DiskManagerTrait;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -145,7 +145,7 @@ impl Drop for ActorBufferPoolManager {
 
 impl ActorBufferPoolManager {
     /// Creates a new ActorBufferPoolManager and spawns the actor_buffer_pool_manager thread.
-    pub fn new(pool_size: usize, disk_manager: Arc<DiskManager>) -> Self {
+    pub fn new(pool_size: usize, disk_manager: Arc<dyn DiskManagerTrait>) -> Self {
         let (sender, receiver) = mpsc::channel();
         let actor = BpmActorState::new(pool_size, disk_manager, receiver);
 
@@ -173,7 +173,7 @@ struct BpmActorState {
     frame_data: Vec<Box<[u8; PAGE_SIZE]>>,
     page_table: HashMap<PageId, FrameId>,
     free_list: Vec<FrameId>,
-    disk_manager: Arc<DiskManager>,
+    disk_manager: Arc<dyn DiskManagerTrait>,
     pool_size: usize,
     clock_hand: usize,
     receiver: mpsc::Receiver<BpmMessage>,
@@ -182,7 +182,7 @@ struct BpmActorState {
 impl BpmActorState {
     fn new(
         pool_size: usize,
-        disk_manager: Arc<DiskManager>,
+        disk_manager: Arc<dyn DiskManagerTrait>,
         receiver: mpsc::Receiver<BpmMessage>,
     ) -> Self {
         let mut frames = Vec::with_capacity(pool_size);

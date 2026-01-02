@@ -1,28 +1,68 @@
 use test_case::test_case;
 use std::sync::Arc;
-use std::thread;
+use std::{io, thread};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tempfile::NamedTempFile;
 
 use buffer_pool_manager::api::{BpmError, BufferPoolManager, PageId};
-use buffer_pool_manager::disk_manager::DiskManager;
+use buffer_pool_manager::disk_manager::{DiskManager, DiskManagerTrait};
 use buffer_pool_manager::actor::ActorBufferPoolManager;
 use buffer_pool_manager::concurrent::ConcurrentBufferPoolManager;
 
 // Define a type alias for the BPM factory to simplify function signatures
-type BPMFactory = Arc<dyn Fn(Arc<DiskManager>, usize) -> Arc<dyn BufferPoolManager + 'static> + Send + Sync>;
+type BPMFactory = Arc<dyn Fn(Arc<dyn DiskManagerTrait>, usize) -> Arc<dyn BufferPoolManager + 'static> + Send + Sync>;
 
+/// A mock DiskManager that can inject I/O failures for testing.
+#[derive(Debug)]
+struct MockDiskManager {
+    inner: DiskManager,
+    should_fail_writes: AtomicBool,
+}
+
+impl MockDiskManager {
+    fn new(disk_manager: DiskManager) -> Self {
+        Self {
+            inner: disk_manager,
+            should_fail_writes: AtomicBool::new(false),
+        }
+    }
+
+    fn enable_write_failures(&self) {
+        self.should_fail_writes.store(true, Ordering::SeqCst);
+    }
+}
+
+impl DiskManagerTrait for MockDiskManager {
+    fn read_page(&self, page_id: PageId, data: &mut [u8]) -> io::Result<()> {
+        self.inner.read_page(page_id, data)
+    }
+
+    fn write_page(&self, page_id: PageId, data: &[u8]) -> io::Result<()> {
+        if self.should_fail_writes.load(Ordering::SeqCst) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Mock write failure injected for testing",
+            ));
+        }
+        self.inner.write_page(page_id, data)
+    }
+
+    fn allocate_page(&self) -> PageId {
+        self.inner.allocate_page()
+    }
+}
 
 const TEST_POOL_SIZE: usize = 3;
 const MULTITHREADED_POOL_SIZE: usize = 10;
 
 fn get_actor_bpm_factory() -> BPMFactory {
-    Arc::new(|disk_manager: Arc<DiskManager>, pool_size: usize| {
+    Arc::new(|disk_manager: Arc<dyn DiskManagerTrait>, pool_size: usize| {
         Arc::new(ActorBufferPoolManager::new(pool_size, disk_manager))
     })
 }
 
 fn get_concurrent_bpm_factory() -> BPMFactory {
-    Arc::new(|disk_manager: Arc<DiskManager>, pool_size: usize| {
+    Arc::new(|disk_manager: Arc<dyn DiskManagerTrait>, pool_size: usize| {
         Arc::new(ConcurrentBufferPoolManager::new(pool_size, disk_manager))
     })
 }
@@ -171,42 +211,18 @@ fn test_lru_eviction(bpm_factory: BPMFactory, pool_size: usize) {
     assert!(res.is_err(), "Expected an error when fetching an evicted page with a full pool of pinned pages");
 }
 
-/// A RAII guard to set a file to read-only and restore its permissions on drop.
-struct ReadOnlyFileGuard<'a> {
-    path: &'a std::path::Path,
-}
-
-impl<'a> ReadOnlyFileGuard<'a> {
-    fn new(path: &'a std::path::Path) -> Self {
-        let mut perms = std::fs::metadata(path).unwrap().permissions();
-        perms.set_readonly(true);
-        std::fs::set_permissions(path, perms).unwrap();
-        Self { path }
-    }
-}
-
-impl<'a> Drop for ReadOnlyFileGuard<'a> {
-    fn drop(&mut self) {
-        // Best effort to restore permissions. Don't panic in drop.
-        if let Ok(metadata) = std::fs::metadata(self.path) {
-            let mut perms = metadata.permissions();
-            perms.set_readonly(false);
-            let _ = std::fs::set_permissions(self.path, perms);
-        }
-    }
-}
-
-#[test_case(get_actor_bpm_factory(), TEST_POOL_SIZE ; "actor_bpm_io_error")]
-#[test_case(get_concurrent_bpm_factory(), TEST_POOL_SIZE ; "concurrent_bpm_io_error")]
-fn test_dirty_page_eviction_with_io_error(bpm_factory: BPMFactory, _pool_size: usize) {
+#[test_case(get_actor_bpm_factory(); "actor_bpm_io_error")]
+#[test_case(get_concurrent_bpm_factory(); "concurrent_bpm_io_error")]
+fn test_dirty_page_eviction_with_io_error(bpm_factory: BPMFactory) {
     let _ = env_logger::try_init();
     // This test uses a pool size of 1 to remove ambiguity in eviction policy.
     const POOL_SIZE: usize = 1;
 
     let temp_file = NamedTempFile::new().unwrap();
     let db_file_path = temp_file.path();
-    let disk_manager = Arc::new(DiskManager::new(db_file_path.to_str().unwrap(), false).unwrap());
-    let bpm = bpm_factory(disk_manager, POOL_SIZE);
+    let real_disk_manager = DiskManager::new(db_file_path.to_str().unwrap(), false).unwrap();
+    let mock_disk_manager = Arc::new(MockDiskManager::new(real_disk_manager));
+    let bpm = bpm_factory(mock_disk_manager.clone(), POOL_SIZE);
 
     // Create a page, make it dirty, and unpin it. The pool is now full.
     {
@@ -214,14 +230,12 @@ fn test_dirty_page_eviction_with_io_error(bpm_factory: BPMFactory, _pool_size: u
         p1[0] = 42; // Make page dirty
     } // p1 is dropped and unpinned.
 
-    let res = {
-        // Make the database file read-only.
-        let _guard = ReadOnlyFileGuard::new(db_file_path);
+    // Enable write failures on the mock disk manager
+    mock_disk_manager.enable_write_failures();
 
-        // Try to create a second page. This MUST evict the dirty page p1.
-        // The flush should fail, returning an error.
-        bpm.new_page()
-    }; // _guard is dropped here, restoring file permissions.
+    // Try to create a second page. This MUST evict the dirty page p1.
+    // The flush should fail with a PermissionDenied error injected by the mock.
+    let res = bpm.new_page();
 
     assert!(res.is_err(), "Expected an I/O error when evicting a dirty page from a full pool of size 1");
     match res {

@@ -2,7 +2,7 @@
 //! The fine-grained locking concurrent_buffer_pool_manager implementation of the Buffer Pool Manager.
 
 use super::api::{BufferPoolManager, BpmError, PageGuard, PageId, PAGE_SIZE};
-use super::disk_manager::DiskManager;
+use super::disk_manager::DiskManagerTrait;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -27,7 +27,7 @@ pub struct ConcurrentBufferPoolManager {
     frames: Vec<RwLock<Frame>>,
     page_table: RwLock<HashMap<PageId, FrameId>>,
     free_list: Mutex<Vec<FrameId>>,
-    disk_manager: Arc<DiskManager>,
+    disk_manager: Arc<dyn DiskManagerTrait>,
     pool_size: usize,
     // The "clock hand" for the CLOCK replacement algorithm.
     clock_hand: Mutex<usize>,
@@ -210,7 +210,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
 
 impl ConcurrentBufferPoolManager {
     /// Creates a new ConcurrentBufferPoolManager.
-    pub fn new(pool_size: usize, disk_manager: Arc<DiskManager>) -> Self {
+    pub fn new(pool_size: usize, disk_manager: Arc<dyn DiskManagerTrait>) -> Self {
         let mut frames = Vec::with_capacity(pool_size);
         let mut free_list = Vec::with_capacity(pool_size);
         for i in 0..pool_size {

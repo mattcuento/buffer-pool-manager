@@ -1,5 +1,5 @@
 
-use buffer_pool_manager::disk_manager::DiskManager;
+use buffer_pool_manager::disk_manager::{DiskManager, DiskManagerTrait};
 use buffer_pool_manager::api::PAGE_SIZE;
 use std::fs;
 use std::sync::Arc;
