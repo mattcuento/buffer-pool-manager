@@ -8,7 +8,7 @@ use crate::api::PageId;
 /// - Bytes 18-19: slot_count (u16, little-endian)
 /// - Byte 20:     page_type (u8)
 /// - Bytes 21+:   Slot array
-
+///
 /// The header of a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]

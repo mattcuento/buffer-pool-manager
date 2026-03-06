@@ -29,12 +29,16 @@ enum BpmMessage {
         page_id: PageId,
         data: Box<[u8; PAGE_SIZE]>,
         is_dirty: bool,
+        responder: Responder<()>,
     },
     FlushPage {
         page_id: PageId,
         responder: Responder<()>,
     },
     FlushAllPages {
+        responder: Responder<()>,
+    },
+    Sync {
         responder: Responder<()>,
     },
     Stop,
@@ -85,11 +89,15 @@ impl Drop for ActorPageGuard {
         let mut data = Box::new([0; PAGE_SIZE]);
         data.copy_from_slice(&self.data[..]);
 
+        let (tx, rx) = mpsc::channel();
         let _ = self.sender.send(BpmMessage::Unpin {
             page_id: self.page_id,
             data,
             is_dirty: self.is_dirty,
+            responder: tx,
         });
+        // Wait for unpin to complete to ensure proper ordering
+        let _ = rx.recv();
     }
 }
 
@@ -134,6 +142,16 @@ impl BufferPoolManager for ActorBufferPoolManager {
         let (tx, rx) = mpsc::channel();
         self.sender.send(BpmMessage::FlushAllPages { responder: tx }).unwrap();
         rx.recv().unwrap()
+    }
+}
+
+impl ActorBufferPoolManager {
+    /// Synchronization barrier - waits for all previous messages to be processed.
+    /// Useful in tests to ensure operations have completed before asserting.
+    pub fn sync(&self) {
+        let (tx, rx) = mpsc::channel();
+        self.sender.send(BpmMessage::Sync { responder: tx }).unwrap();
+        let _ = rx.recv();
     }
 }
 
@@ -221,8 +239,9 @@ impl BpmActorState {
                     let result = self.new_page_logic();
                     let _ = responder.send(result);
                 }
-                BpmMessage::Unpin { page_id, data, is_dirty } => {
+                BpmMessage::Unpin { page_id, data, is_dirty, responder } => {
                     self.unpin_logic(page_id, data, is_dirty);
+                    let _ = responder.send(Ok(()));
                 }
                 BpmMessage::FlushPage { page_id, responder } => {
                     let result = self.flush_page_logic(page_id);
@@ -231,6 +250,10 @@ impl BpmActorState {
                 BpmMessage::FlushAllPages { responder } => {
                     let result = self.flush_all_pages_logic();
                     let _ = responder.send(result);
+                }
+                BpmMessage::Sync { responder } => {
+                    trace!("BPM Actor received sync barrier.");
+                    let _ = responder.send(Ok(()));
                 }
                 BpmMessage::Stop => {
                     debug!("BPM Actor received stop signal.");
@@ -308,7 +331,7 @@ impl BpmActorState {
             is_dirty: true,
             is_referenced: true,
         };
-        self.frame_data[frame_id] = Box::new([0; PAGE_SIZE]);
+        *self.frame_data[frame_id] = [0; PAGE_SIZE];
 
         Ok((new_page_id, self.frame_data[frame_id].clone()))
     }

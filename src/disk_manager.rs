@@ -57,7 +57,10 @@ impl DiskManager {
         }
 
         let metadata = file.metadata()?;
-        let next_page_id = (metadata.len() / PAGE_SIZE as u64) as PageId;
+        // Page IDs start at 1 because 0 is reserved as INVALID_PAGE_ID.
+        // For a fresh file, we always start at 1.
+        let file_pages = (metadata.len() / PAGE_SIZE as u64) as PageId;
+        let next_page_id = file_pages.max(1);
 
         Ok(Self {
             db_file: file,
