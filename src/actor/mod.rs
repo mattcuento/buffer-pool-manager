@@ -23,6 +23,7 @@ enum BpmMessage {
         responder: Responder<Box<[u8; PAGE_SIZE]>>,
     },
     NewPage {
+        table_id: u32,
         responder: Responder<(PageId, Box<[u8; PAGE_SIZE]>)>,
     },
     Unpin {
@@ -114,9 +115,9 @@ impl BufferPoolManager for ActorBufferPoolManager {
         }))
     }
 
-    fn new_page(&self) -> Result<Box<dyn PageGuard + '_>, BpmError> {
+    fn new_page(&self, table_id: u32) -> Result<Box<dyn PageGuard + '_>, BpmError> {
         let (tx, rx) = mpsc::channel();
-        self.sender.send(BpmMessage::NewPage { responder: tx }).unwrap();
+        self.sender.send(BpmMessage::NewPage { table_id, responder: tx }).unwrap();
         let (page_id, data) = rx.recv().unwrap()?;
         Ok(Box::new(ActorPageGuard {
             page_id,
@@ -235,8 +236,8 @@ impl BpmActorState {
                     let result = self.fetch_page_logic(page_id);
                     let _ = responder.send(result);
                 }
-                BpmMessage::NewPage { responder } => {
-                    let result = self.new_page_logic();
+                BpmMessage::NewPage { table_id, responder } => {
+                    let result = self.new_page_logic(table_id);
                     let _ = responder.send(result);
                 }
                 BpmMessage::Unpin { page_id, data, is_dirty, responder } => {
@@ -304,7 +305,7 @@ impl BpmActorState {
         Ok(self.frame_data[frame_id].clone())
     }
 
-    fn new_page_logic(&mut self) -> Result<(PageId, Box<[u8; PAGE_SIZE]>), BpmError> {
+    fn new_page_logic(&mut self, table_id: u32) -> Result<(PageId, Box<[u8; PAGE_SIZE]>), BpmError> {
         trace!("Creating new page.");
         let frame_id = self.find_victim_frame()?;
 
@@ -318,7 +319,7 @@ impl BpmActorState {
             self.frames[frame_id].is_dirty = false;
         }
 
-        let new_page_id = self.disk_manager.allocate_page();
+        let new_page_id = self.disk_manager.allocate_page(table_id);
         debug!("Allocated new page_id {}.", new_page_id);
 
         trace!("Updating page table: removing page {}, adding page {}.", old_page_id, new_page_id);

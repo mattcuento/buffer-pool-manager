@@ -5,6 +5,9 @@ use std::fmt::Debug;
 
 
 /// A unique identifier for a page in the database.
+///
+/// Composite encoding: high 32 bits = table_id, low 32 bits = local page number.
+/// `INVALID_PAGE_ID = 0` is always invalid since valid table IDs start at 1.
 pub type PageId = usize;
 
 /// A constant to represent an invalid page ID.
@@ -12,6 +15,29 @@ pub const INVALID_PAGE_ID: PageId = 0;
 
 /// The size of a single page in bytes.
 pub const PAGE_SIZE: usize = 4096;
+
+/// Number of pages per segment file (1 GB / 4 KB).
+pub const PAGES_PER_SEGMENT: usize = 262_144;
+
+/// Maximum bytes per segment file.
+pub const MAX_SEGMENT_BYTES: u64 = PAGES_PER_SEGMENT as u64 * PAGE_SIZE as u64;
+
+/// Creates a composite page ID from a table ID and a local page number.
+///
+/// High 32 bits = table_id, low 32 bits = local_page. table_id must be > 0.
+pub fn make_page_id(table_id: u32, local_page: u32) -> PageId {
+    ((table_id as usize) << 32) | (local_page as usize)
+}
+
+/// Extracts the table ID from a composite page ID.
+pub fn table_id_of(page_id: PageId) -> u32 {
+    (page_id >> 32) as u32
+}
+
+/// Extracts the local page number from a composite page ID.
+pub fn local_page_of(page_id: PageId) -> u32 {
+    (page_id & 0xFFFF_FFFF) as u32
+}
 
 /// A specialized error type for buffer pool manager operations.
 #[derive(Debug)]
@@ -46,11 +72,14 @@ pub trait BufferPoolManager: Send + Sync {
     /// * `page_id` - The ID of the page to fetch.
     fn fetch_page(&self, page_id: PageId) -> Result<Box<dyn PageGuard + '_>, BpmError>;
 
-    /// Creates a new page in the buffer pool.
+    /// Creates a new page in the buffer pool for the given table.
     ///
     /// Finds an available frame, allocates a new page ID, and returns the
     /// pinned page as a `PageGuard`.
-    fn new_page(&self) -> Result<Box<dyn PageGuard + '_>, BpmError>;
+    ///
+    /// # Arguments
+    /// * `table_id` - The ID of the table that owns the new page.
+    fn new_page(&self, table_id: u32) -> Result<Box<dyn PageGuard + '_>, BpmError>;
 
     /// Unpins a page from the buffer pool.
     ///

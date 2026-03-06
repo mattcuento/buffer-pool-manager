@@ -133,7 +133,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
         }))
     }
 
-    fn new_page(&self) -> Result<Box<dyn PageGuard + '_>, BpmError> {
+    fn new_page(&self, table_id: u32) -> Result<Box<dyn PageGuard + '_>, BpmError> {
         trace!("Creating new page.");
         let frame_id = self.find_victim_frame()?;
         let mut frame = self.frames[frame_id].write().unwrap();
@@ -147,7 +147,7 @@ impl BufferPoolManager for ConcurrentBufferPoolManager {
             frame.is_dirty = false;
         }
 
-        let new_page_id = self.disk_manager.allocate_page();
+        let new_page_id = self.disk_manager.allocate_page(table_id);
         debug!("Allocated new page_id {}.", new_page_id);
 
         // Update frame metadata.

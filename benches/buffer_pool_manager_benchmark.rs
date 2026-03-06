@@ -5,19 +5,19 @@ use buffer_pool_manager::api::BufferPoolManager;
 use buffer_pool_manager::disk_manager::DiskManager;
 use buffer_pool_manager::concurrent::ConcurrentBufferPoolManager;
 use std::fs;
+use std::path::Path;
 
 const POOL_SIZE: usize = 100;
 const NUM_PAGES: usize = 1000;
+const TABLE_ID: u32 = 1;
 
-// Helper to create a DiskManager and cleanup the db file at the end
-fn setup_disk_manager(db_file: &str, use_direct_io: bool) -> Arc<DiskManager> {
-    // Ensure cleanup of previous run if any
-    let _ = fs::remove_file(db_file); 
-    let dm = Arc::new(DiskManager::new(db_file, use_direct_io).unwrap());
+fn setup_disk_manager(dir: &str, use_direct_io: bool) -> Arc<DiskManager> {
+    let _ = fs::remove_dir_all(dir);
+    let dm = Arc::new(DiskManager::new(Path::new(dir), use_direct_io).unwrap());
+    dm.register_table(TABLE_ID, "t").unwrap();
     dm
 }
 
-// Benchmark function for writing new pages
 fn bench_write_pages<B: BufferPoolManager + 'static>(
     c: &mut Criterion,
     id: &str,
@@ -25,22 +25,20 @@ fn bench_write_pages<B: BufferPoolManager + 'static>(
     use_direct_io: bool,
 ) {
     let mut group = c.benchmark_group(format!("Write Pages - {}", id));
-    group.sample_size(10); // Smaller sample size for quick iteration during development
+    group.sample_size(10);
 
     group.bench_function("new_page", |b| {
         b.iter_custom(|iters| {
             let start = std::time::Instant::now();
             for _i in 0..iters {
-                // Create a fresh BPM for each iteration to avoid state interference
-                // and to measure the cost of BPM creation if it's significant.
-                // The DB file is created by disk_manager
-                let current_disk_manager = setup_disk_manager(&format!("{}_write_{}.db", id, _i), use_direct_io);
+                let dir = format!("{}_write_{}", id, _i);
+                let current_disk_manager = setup_disk_manager(&dir, use_direct_io);
                 let current_bpm = bpm_factory(current_disk_manager.clone(), POOL_SIZE);
                 for _ in 0..black_box(NUM_PAGES) {
-                    let _page = black_box(current_bpm.new_page().unwrap());
+                    let _page = black_box(current_bpm.new_page(TABLE_ID).unwrap());
                 }
                 black_box(current_bpm.flush_all_pages().unwrap());
-                let _ = fs::remove_file(format!("{}_write_{}.db", id, _i)); // Clean up this iteration's file
+                let _ = fs::remove_dir_all(&dir);
             }
             start.elapsed()
         });
@@ -48,7 +46,6 @@ fn bench_write_pages<B: BufferPoolManager + 'static>(
     group.finish();
 }
 
-// Benchmark function for reading pages
 fn bench_read_pages<B: BufferPoolManager + 'static>(
     c: &mut Criterion,
     id: &str,
@@ -56,21 +53,20 @@ fn bench_read_pages<B: BufferPoolManager + 'static>(
     use_direct_io: bool,
 ) {
     let mut group = c.benchmark_group(format!("Read Pages - {}", id));
-    group.sample_size(10); // Smaller sample size
+    group.sample_size(10);
 
-    let db_file = format!("{}_read.db", id);
-    let disk_manager = setup_disk_manager(&db_file, use_direct_io);
+    let dir = format!("{}_read", id);
+    let disk_manager = setup_disk_manager(&dir, use_direct_io);
     let bpm = bpm_factory(disk_manager.clone(), POOL_SIZE);
     let mut page_ids = Vec::with_capacity(NUM_PAGES);
     for _ in 0..NUM_PAGES {
-        let page = bpm.new_page().unwrap();
+        let page = bpm.new_page(TABLE_ID).unwrap();
         page_ids.push(page.page_id());
     }
-    bpm.flush_all_pages().unwrap(); // Ensure all pages are written to disk
-    
+    bpm.flush_all_pages().unwrap();
+
     group.bench_function("fetch_page", |b| {
         b.iter(|| {
-            // For reads, we can use the same BPM and just fetch pages
             for &page_id in black_box(&page_ids) {
                 let _page = black_box(bpm.fetch_page(page_id).unwrap());
             }
@@ -78,8 +74,7 @@ fn bench_read_pages<B: BufferPoolManager + 'static>(
     });
     group.finish();
 
-    // Cleanup after all read benchmarks for this group
-    let _ = fs::remove_file(db_file);
+    let _ = fs::remove_dir_all(&dir);
 }
 
 
